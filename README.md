@@ -76,6 +76,51 @@ has not yet been verified against a live tenant.
 }
 ```
 
+### Run with uvx (no checkout)
+
+The server is uvx-runnable over stdio, which is how Harriet's sandboxed MCP servers run it:
+`command` is `uvx`, `args` are `--from <git ref> officespace-mcp`, and configuration is passed as
+environment variables (never CLI args or tool arguments). Pin a commit SHA (or tag) rather than a
+moving branch, so installs are reproducible and cacheable:
+
+```sh
+OFFICESPACE_GRAPHQL_URL=... OFFICESPACE_AUTH_VALUE=... \
+  uvx --from git+https://github.com/JustParent/officespace-mcp@<commit-sha> officespace-mcp
+```
+
+Claude Desktop-style configuration (also the shape Harriet's sandbox uses):
+
+```json
+{
+  "mcpServers": {
+    "officespace": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/JustParent/officespace-mcp@<commit-sha>", "officespace-mcp"],
+      "env": {
+        "OFFICESPACE_GRAPHQL_URL": "https://<tenant>.officespacesoftware.com/<graphql-path>",
+        "OFFICESPACE_AUTH_HEADER": "Authorization",
+        "OFFICESPACE_AUTH_VALUE": "<complete header value>",
+        "OFFICESPACE_ENABLE_MUTATIONS": "false"
+      }
+    }
+  }
+}
+```
+
+Notes for sandboxed/uvx deployments:
+
+- Use the default `stdio` transport; do not pass `--transport streamable-http`. `MCP_BEARER_TOKEN`
+  and `MCP_ALLOWED_HOSTS` are only for HTTP and can be omitted.
+- Set `OFFICESPACE_GRAPHQL_URL` and `OFFICESPACE_AUTH_VALUE` (a secret) as environment variables.
+  `OFFICESPACE_AUTH_HEADER` is optional. Leave `OFFICESPACE_ENABLE_MUTATIONS` unset/`false` for a
+  read-only deployment; `true` enables the write tools.
+- The GraphQL schema snapshot is bundled in the package, so `OFFICESPACE_SCHEMA_PATH` is not needed.
+- Dependencies are exact-pinned in `pyproject.toml` (including `mcp==2.2.0`), so no extra
+  `--with` pins are required. Requires Python 3.12+.
+- The entry point is `officespace-mcp` (a console script). uvx builds the package from git on
+  first use; to roll out a new version, bump the commit SHA in the `--from` ref.
+- To test locally from a checkout: `uvx --from . officespace-mcp --help`.
+
 ### Streamable HTTP
 
 Set `MCP_BEARER_TOKEN` to a strong random token, set `MCP_ALLOWED_HOSTS` to the host clients use, and
