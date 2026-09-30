@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "officespace-mcp"
+version = "0.1.0"
+description = "OfficeSpace admin workflows and GraphQL access over MCP"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "graphql-core==3.3.0",
+  "httpx==0.28.1",
+  "mcp==2.2.0",
+  "pydantic==2.13.5",
+  "starlette==1.7.0",
+  "uvicorn==0.54.0",
+]
+
+[project.scripts]
+officespace-mcp = "officespace_mcp.server:main"
+
+[dependency-groups]
+dev = ["pytest==9.1.1", "pytest-asyncio==1.4.0", "ruff==0.16.9"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/officespace_mcp"]
