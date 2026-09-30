@@ -200,7 +200,7 @@ uv run pytest
 uv build
 ```
 
-CI runs lint, tests and a wheel build on Python 3.12 and 3.13. Tests include real in-memory and stdio
+CI runs lint, tests and a wheel build on Python 3.12. Tests include real in-memory and stdio
 MCP clients, the HTTP authentication boundary, request construction against the full schema,
 pagination, ambiguity, partial failures and the write gate. No live credentials are needed.
 
