@@ -19,7 +19,7 @@ class Office:
     def __init__(self):
         self.settings = Settings(
             graphql_url="https://tenant.example/graphql",
-            auth_value="Bearer upstream-secret",
+            auth_value="upstream-secret",
             enable_mutations=True,
         )
         self.api = API(self.settings, httpx.MockTransport(self.handle))
@@ -100,7 +100,8 @@ class Office:
     def handle(self, request):
         self.http_requests.append(request)
         assert str(request.url) == self.settings.graphql_url
-        assert request.headers["Authorization"] == "Bearer upstream-secret"
+        assert request.headers["apikey"] == "upstream-secret"
+        assert "authorization" not in request.headers
         body = json.loads(request.content)
         assert "upstream-secret" not in body["query"]
         ast = parse(body["query"])

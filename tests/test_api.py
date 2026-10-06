@@ -169,6 +169,21 @@ def test_invalid_configuration(url):
         Settings(graphql_url=url)
 
 
+async def test_key_is_sent_in_apikey_header_whatever_the_environment_says(office, monkeypatch):
+    monkeypatch.setenv("OFFICESPACE_AUTH_HEADER", "Authorization")
+    monkeypatch.setenv("OFFICESPACE_AUTH_VALUE", "upstream-secret")
+    monkeypatch.setenv("OFFICESPACE_GRAPHQL_URL", office.settings.graphql_url)
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={"data": {"sites": []}})
+
+    await API(Settings.from_env(), httpx.MockTransport(handler)).execute("{ sites { id } }")
+    assert seen[0].headers["apikey"] == "upstream-secret"
+    assert "authorization" not in seen[0].headers
+
+
 def test_credentials_excluded_from_repr():
     assert "supersecret" not in repr(Settings(auth_value="supersecret", mcp_token="supersecret"))
 

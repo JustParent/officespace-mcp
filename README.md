@@ -44,24 +44,29 @@ Configuration:
 
 | Variable | Meaning |
 | --- | --- |
-| `OFFICESPACE_GRAPHQL_URL` | Exact HTTPS GraphQL POST endpoint for the tenant |
-| `OFFICESPACE_AUTH_HEADER` | Authentication header name; defaults to `Authorization` |
-| `OFFICESPACE_AUTH_VALUE` | Complete header value, including any required prefix |
+| `OFFICESPACE_GRAPHQL_URL` | GraphQL POST endpoint: `https://api.officespacesoftware.com/graphql` |
+| `OFFICESPACE_AUTH_VALUE` | OfficeSpace API key, sent in the `apikey` request header |
 | `OFFICESPACE_ENABLE_MUTATIONS` | `true` enables writes; defaults to `false` |
 | `OFFICESPACE_SCHEMA_PATH` | Optional path to a replacement SDL or introspection JSON schema |
 | `MCP_BEARER_TOKEN` | Required for HTTP clients; a separate server access token |
 | `MCP_ALLOWED_HOSTS` | HTTP Host allowlist, comma-separated; add the public reverse-proxy hostname |
 
-The uploaded schema describes operations and types, **not the endpoint or authentication scheme**.
-Get those from your tenant's GraphiQL setup at
-`https://<tenant>.officespacesoftware.com/api/base/graphiql` or from OfficeSpace support. Copy the POST
-endpoint and authentication header for an API-key request; do not use a browser session cookie.
-The documentation page URL is not assumed to be the API endpoint. Legacy REST authentication is not
-assumed to apply to GraphQL. Credentials stay in process configuration, never tool arguments.
+All requests are `POST https://api.officespacesoftware.com/graphql` with the API key in an `apikey`
+header (see the [OfficeSpace developer docs](https://developers.officespacesoftware.com/getting-started.html)).
+The header name is fixed and not configurable.
+
+To create a key, sign in to OfficeSpace as an administrator, go to **Admin > Integrations > API Keys**,
+click **Create API Key**, choose an access level, and copy the token (it is shown only once).
+
+Do not use the tenant's GraphiQL page (`https://<tenant>.officespacesoftware.com/api/base/graphiql`)
+as the endpoint: it is a browser-session UI, not the API. Legacy REST keys (`Authorization: Token
+token=...`, `/api/1/...`) and the tenant's OAuth tokens are different schemes and do not apply here.
+Credentials stay in process configuration, never tool arguments.
 
 Without credentials the schema tools still work; API tools return a configuration error. This
-implementation has contract tests against the supplied schema and mocked upstream responses; it
-has not yet been verified against a live tenant.
+implementation has contract tests against the supplied schema and mocked upstream responses. The
+read tools have been exercised against a live tenant; the write tools have only been verified
+against the mocked upstream.
 
 ### MCP client configuration (stdio)
 
@@ -97,9 +102,8 @@ Claude Desktop-style configuration (also the shape Harriet's sandbox uses):
       "command": "uvx",
       "args": ["--from", "git+https://github.com/JustParent/officespace-mcp@<commit-sha>", "officespace-mcp"],
       "env": {
-        "OFFICESPACE_GRAPHQL_URL": "https://<tenant>.officespacesoftware.com/<graphql-path>",
-        "OFFICESPACE_AUTH_HEADER": "Authorization",
-        "OFFICESPACE_AUTH_VALUE": "<complete header value>",
+        "OFFICESPACE_GRAPHQL_URL": "https://api.officespacesoftware.com/graphql",
+        "OFFICESPACE_AUTH_VALUE": "<API key>",
         "OFFICESPACE_ENABLE_MUTATIONS": "false"
       }
     }
@@ -112,8 +116,8 @@ Notes for sandboxed/uvx deployments:
 - Use the default `stdio` transport; do not pass `--transport streamable-http`. `MCP_BEARER_TOKEN`
   and `MCP_ALLOWED_HOSTS` are only for HTTP and can be omitted.
 - Set `OFFICESPACE_GRAPHQL_URL` and `OFFICESPACE_AUTH_VALUE` (a secret) as environment variables.
-  `OFFICESPACE_AUTH_HEADER` is optional. Leave `OFFICESPACE_ENABLE_MUTATIONS` unset/`false` for a
-  read-only deployment; `true` enables the write tools.
+  Leave `OFFICESPACE_ENABLE_MUTATIONS` unset/`false` for a read-only deployment; `true` enables the
+  write tools.
 - The GraphQL schema snapshot is bundled in the package, so `OFFICESPACE_SCHEMA_PATH` is not needed.
 - Dependencies are exact-pinned in `pyproject.toml` (including `mcp==2.2.0`), so no extra
   `--with` pins are required. Requires Python 3.12+.

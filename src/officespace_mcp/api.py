@@ -153,7 +153,7 @@ class API:
             raise OfficeSpaceError("Configure OFFICESPACE_GRAPHQL_URL and OFFICESPACE_AUTH_VALUE.")
         headers = {
             "Accept": "application/json",
-            self.settings.auth_header: self.settings.auth_value,
+            "apikey": self.settings.auth_value,
         }
         uncertain = (
             " Mutation outcome is unknown; check OfficeSpace before retrying."
