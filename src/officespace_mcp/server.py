@@ -4,15 +4,16 @@ import argparse
 import hmac
 import json
 import os
-from collections.abc import Awaitable
-from typing import Annotated, Literal
+from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
+from typing import Annotated, Any, Literal
 
 import httpx
 import uvicorn
 from mcp.server import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
-from pydantic import AwareDatetime, Field
+from pydantic import AwareDatetime, Field, ValidationError, validate_call
 from starlette.responses import JSONResponse
 
 from . import __version__
@@ -29,6 +30,16 @@ BatchRequests = Annotated[list[RequestChange], Field(min_length=1, max_length=50
 IDs = Annotated[list[str], Field(min_length=1, max_length=50)]
 READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False)
+DryRunnable = Literal[
+    "book_spaces",
+    "change_bookings",
+    "manage_employees",
+    "manage_moves",
+    "manage_requests",
+    "graphql",
+]
+# Set only by validate_request: write tools then resolve and validate but never send a write.
+DRY_RUN: ContextVar[bool] = ContextVar("officespace_dry_run", default=False)
 
 
 def result(payload: dict, error: bool = False) -> CallToolResult:
@@ -59,8 +70,18 @@ def create_server(
         "results are partial. Batches are not transactions; inspect each outcome and never replay "
         "uncertain mutations. Seat capacity/allocation is not actual attendance. For other tasks, "
         "inspect_schema describes the full API for graphql. This process uses one tenant's "
-        "configured API credential. Writes enabled: " + str(settings.enable_mutations).lower(),
+        "configured API credential. Call validate_request with a write tool's exact arguments "
+        "before running it: it resolves names and checks the request shape without writing. "
+        "Writes enabled: " + str(settings.enable_mutations).lower(),
     )
+    dry_runnable: dict[str, Callable[..., Awaitable[CallToolResult]]] = {}
+
+    def write_tool(fn):
+        dry_runnable[fn.__name__] = fn
+        return server.tool(annotations=WRITE)(fn)
+
+    def flow() -> Workflows:
+        return Workflows(api, dry_run=DRY_RUN.get())
 
     @server.tool(annotations=READ)
     async def workplace_overview(site: str | None = None) -> CallToolResult:
@@ -129,18 +150,19 @@ def create_server(
         """
         return await respond(Workflows(api).bookings(kind, start, end, person, space, site))
 
-    @server.tool(annotations=WRITE)
+    @write_tool
     async def book_spaces(bookings: BatchBookings) -> CallToolResult:
         """Book named desks or rooms on behalf of employees, including team batches.
 
         Resolves every person and space before submitting any writes. Desk times are converted
         to each site's time zone. Room organizerId is an EMPLOYEE ID. Notifications and conflict
         rules stay with OfficeSpace. One call can contain up to 50 reservations. Inspect every
-        result: a batch can partially succeed and must not be blindly retried.
+        result: a batch can partially succeed and must not be blindly retried. Call
+        validate_request with the same arguments first to check names and shape.
         """
-        return await respond(Workflows(api).book(bookings))
+        return await respond(flow().book(bookings))
 
-    @server.tool(annotations=WRITE)
+    @write_tool
     async def change_bookings(
         kind: Kind,
         action: Literal["cancel", "reschedule", "confirm", "end"],
@@ -157,15 +179,14 @@ def create_server(
         Supply IDs OR a person/space plus start/end to resolve matching reservations internally.
         Reschedule requires new_start/new_end; these apply to every selected booking. Cancel
         future room reservations; use end for a room meeting already in progress. This does not
-        cancel an entire recurrence series, only the selected reservation IDs.
+        cancel an entire recurrence series, only the selected reservation IDs. Call
+        validate_request with the same arguments first to check names and shape.
         """
         return await respond(
-            Workflows(api).change_bookings(
-                kind, action, ids, person, space, start, end, new_start, new_end
-            )
+            flow().change_bookings(kind, action, ids, person, space, start, end, new_start, new_end)
         )
 
-    @server.tool(annotations=WRITE)
+    @write_tool
     async def manage_employees(
         action: Literal["create", "update", "deactivate"], changes: BatchEmployees
     ) -> CallToolResult:
@@ -175,11 +196,12 @@ def create_server(
         department, title, team, email, startDate; inspect_schema exposes CreateEmployeeInput and
         UpdateEmployeeInput for other fields. Create needs values.employeeId (external ID).
         Deactivate changes the employee record only: it does not cancel bookings or vacate seats.
-        All local input validation and identity lookups finish before writes are sent.
+        All local input validation and identity lookups finish before writes are sent. Call
+        validate_request with the same arguments first to preview the resolved changes.
         """
-        return await respond(Workflows(api).employees(action, changes))
+        return await respond(flow().employees(action, changes))
 
-    @server.tool(annotations=WRITE)
+    @write_tool
     async def manage_moves(
         action: Literal["schedule", "complete", "cancel"],
         plans: BatchMoves | None = None,
@@ -191,10 +213,11 @@ def create_server(
         Schedule uses plans with person, destination and move_date. Source defaults to the
         employee's unique current seat; omit destination to vacate. Complete/cancel use IDs.
         Scheduling does not immediately complete a move. No force-vacate or conflict override.
+        Call validate_request with the same arguments first to check names and shape.
         """
-        return await respond(Workflows(api).moves(action, plans, ids, comment))
+        return await respond(flow().moves(action, plans, ids, comment))
 
-    @server.tool(annotations=WRITE)
+    @write_tool
     async def manage_requests(
         action: Literal["list", "create", "status"],
         changes: BatchRequests | None = None,
@@ -207,8 +230,9 @@ def create_server(
         request type and requestor; each change needs request_type, subject, requestor. Status
         changes need id/status and may include assignee and comment. extra accepts schema-defined
         arguments such as customFieldValues or masterRequestId. File uploads are not supported.
+        Call validate_request with the same arguments first to check names and shape.
         """
-        return await respond(Workflows(api).requests(action, changes, status, site))
+        return await respond(flow().requests(action, changes, status, site))
 
     @server.tool(annotations=READ)
     async def inspect_schema(search: str = "", type_name: str | None = None) -> CallToolResult:
@@ -229,9 +253,43 @@ def create_server(
         Discover fields with inspect_schema. Use variables for values. The same write gate
         applies as for workflow tools. Partial data and GraphQL errors are preserved. No automatic
         retries. For mutations request payload error/errors fields and inspect them for failures.
-        JSON transport only: multipart Upload inputs and subscriptions are not supported.
+        JSON transport only: multipart Upload inputs and subscriptions are not supported. For
+        mutations, call validate_request with the same arguments first to check the document.
         """
+        if DRY_RUN.get():
+            return await respond(check_graphql(document, variables))
         return await respond(api.execute(document, variables))
+
+    async def check_graphql(document: str, variables: dict | None) -> dict:
+        kind = api.validate(document, variables or {})
+        return {"ok": True, "dry_run": True, "writes_sent": False, "kind": kind}
+
+    dry_runnable["graphql"] = graphql
+
+    @server.tool(annotations=READ)
+    async def validate_request(tool: DryRunnable, arguments: dict[str, Any]) -> CallToolResult:
+        """Dry-run a write tool: resolve names and check the request shape without writing.
+
+        Pass the write tool's name and the exact arguments you intend to send. Runs the same
+        validation and lookups as the real call (read-only upstream queries), then stops before
+        any write. Success returns would_submit with each operation's resolved arguments and,
+        for bookings, a summary of person, space, floor, site and site-local times. Errors list
+        what to fix (bad argument shape, ambiguous or unknown names, invalid GraphQL, writes
+        disabled). OfficeSpace's own policy, conflict and permission checks only run on the
+        real call, so success is not a guarantee. Read-only: safe to call without approval.
+        """
+        token = DRY_RUN.set(True)
+        try:
+            return await validate_call(dry_runnable[tool])(**arguments)
+        except ValidationError as e:
+            problems = "; ".join(
+                f"{'.'.join(str(part) for part in err['loc'])}: {err['msg']}" for err in e.errors()
+            )
+            return result(
+                {"ok": False, "error": f"Invalid arguments for {tool}: {problems}"}, error=True
+            )
+        finally:
+            DRY_RUN.reset(token)
 
     @server.resource("officespace://schema", mime_type="text/plain")
     def schema() -> str:

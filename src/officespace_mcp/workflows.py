@@ -97,13 +97,33 @@ def local_booking_times(start: datetime, end: datetime, zone: str) -> dict:
 
 
 class Workflows:
-    def __init__(self, api: API):
+    def __init__(self, api: API, dry_run: bool = False):
         self.api = api
+        # A dry run resolves and validates exactly like a real call, then stops before the write.
+        self.dry_run = dry_run
         # A Workflows instance lasts one MCP call, so lookups cannot go stale between calls.
         self.people_cache, self.user_cache, self.site_cache = {}, {}, {}
         self.floor_cache, self.space_cache = {}, {}
 
-    def mutation(self, name: str, arguments: dict) -> Operation:
+    async def submit(self, operations: list[Operation]):
+        if not self.dry_run:
+            return await self.api.mutate(operations)
+        self.api.compile("mutation", operations)
+        return {
+            "ok": True,
+            "dry_run": True,
+            "writes_sent": False,
+            "would_submit": [
+                {
+                    "operation": op.name,
+                    "arguments": op.arguments,
+                    **({"summary": op.summary} if op.summary else {}),
+                }
+                for op in operations
+            ],
+        }
+
+    def mutation(self, name: str, arguments: dict, summary: dict | None = None) -> Operation:
         result_type = get_named_type(self.api.schema.mutation_type.fields[name].type)
         if result_type.name in PROJECTIONS:
             selection = PROJECTIONS[result_type.name]
@@ -118,7 +138,7 @@ class Workflows:
                 elif nested.name in PROJECTIONS:
                     fields.append(key + " { " + PROJECTIONS[nested.name] + " }")
             selection = " ".join(fields) or "__typename"
-        return Operation(name, arguments, selection)
+        return Operation(name, arguments, selection, summary or {})
 
     async def person(self, ref: str) -> dict:
         if ref in self.people_cache:
@@ -393,14 +413,24 @@ class Workflows:
             seen.add(key)
             if not who["active"]:
                 raise OfficeSpaceError(f"Employee {item.person!r} is inactive.")
+            site = place["floor"]["site"]
+            summary = {
+                "person": who["fullName"],
+                "email": who["email"],
+                "space": place["label"],
+                "floor": place["floor"]["label"],
+                "site": site["name"],
+            }
             if item.kind == "desk":
                 if not place["bookable"] or place["isInactive"]:
                     raise OfficeSpaceError(f"Desk {place['label']!r} is not bookable.")
-                args = {
-                    "employeeId": who["id"],
-                    "seatId": place["id"],
-                    **local_booking_times(item.start, item.end, place["floor"]["site"]["timeZone"]),
-                }
+                times = local_booking_times(item.start, item.end, site["timeZone"])
+                args = {"employeeId": who["id"], "seatId": place["id"], **times}
+                summary.update(
+                    start=f"{times['checkInDate']} {times['checkInTime']}",
+                    end=f"{times['checkOutDate']} {times['checkOutTime']}",
+                    time_zone=site["timeZone"],
+                )
                 if item.note is not None:
                     args["note"] = item.note
                 name = "createBooking"
@@ -413,11 +443,12 @@ class Workflows:
                     "endTime": item.end.isoformat(),
                     "guestEmails": item.guest_emails,
                 }
+                summary.update(start=item.start.isoformat(), end=item.end.isoformat())
                 if item.note is not None:
                     args["description"] = item.note
                 name = "bookRoom"
-            operations.append(self.mutation(name, args))
-        return await self.api.mutate(operations)
+            operations.append(self.mutation(name, args, summary))
+        return await self.submit(operations)
 
     async def change_bookings(
         self,
@@ -484,7 +515,7 @@ class Workflows:
 
                 args["endTime"] = datetime.now(UTC).isoformat()
             operations.append(self.mutation(names[kind, action], args))
-        return await self.api.mutate(operations)
+        return await self.submit(operations)
 
     async def employees(self, action: str, changes: list[EmployeeChange]):
         self.api.require_writes()
@@ -518,7 +549,7 @@ class Workflows:
                     raise OfficeSpaceError("Deactivate does not accept values.")
         if action == "deactivate":
             operations = [self.mutation("deactivateEmployees", {"ids": ids})]
-        return await self.api.mutate(operations)
+        return await self.submit(operations)
 
     async def moves(
         self, action: str, plans: list[Move] | None, ids: list[str] | None, comment: str | None
@@ -565,7 +596,7 @@ class Workflows:
             operations = [
                 self.mutation("cancelMoves" if action == "cancel" else "completeMoves", args)
             ]
-        return await self.api.mutate(operations)
+        return await self.submit(operations)
 
     async def requests(
         self, action: str, changes: list[RequestChange] | None, status: str | None, site: str | None
@@ -622,4 +653,4 @@ class Workflows:
                 raise OfficeSpaceError("extra must not override resolved fields.")
             args.update(change.extra)
             operations.append(self.mutation(name, args))
-        return await self.api.mutate(operations)
+        return await self.submit(operations)

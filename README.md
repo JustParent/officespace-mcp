@@ -29,6 +29,21 @@ An open-ended request such as “find a suitable room, then book the one I choos
 booking call. A request naming the room and organizer can go straight to `book_spaces`. Bulk calls
 avoid repeated model/tool round trips; they may involve multiple upstream HTTP requests.
 
+### Checking a write before sending it
+
+`validate_request` is a read-only dry run for `book_spaces`, `change_bookings`, `manage_employees`,
+`manage_moves`, `manage_requests` and `graphql`. Pass the tool name and the exact arguments you
+plan to send. It runs the same argument validation, name lookups (read-only upstream queries) and
+GraphQL validation as the real call, then stops before any write. On success it returns
+`would_submit`: each operation's resolved arguments plus, for bookings, a `summary` of person, space,
+floor, site and site-local times. On failure it returns what to fix, such as an ambiguous desk
+label, an unknown field or a missing argument. Clients that gate write tools behind a user approval
+can leave `validate_request` ungated.
+
+It is not a guarantee: OfficeSpace's own policy, conflict and permission checks (for example seats
+that enforce full-day bookings) only run on the real call. Writes must still be enabled for the
+dry run to succeed.
+
 ## Setup
 
 Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).

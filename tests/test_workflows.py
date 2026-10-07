@@ -1,4 +1,5 @@
 from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime
 
 import pytest
@@ -340,3 +341,114 @@ def test_dst_ambiguity_is_rejected():
             datetime.fromisoformat("2026-10-25T03:30:00Z"),
             "Europe/London",
         )
+
+
+BOOK_ARGS = {"bookings": [booking().model_dump(mode="json")]}
+
+
+async def validate(office, tool, arguments, settings=None):
+    server = create_server(settings or office.settings, office.api.transport)
+    async with Client(server) as client:
+        return await client.call_tool("validate_request", {"tool": tool, "arguments": arguments})
+
+
+async def test_validate_request_previews_resolved_booking_without_writing(office):
+    response = await validate(office, "book_spaces", BOOK_ARGS)
+    assert not response.is_error
+    payload = response.structured_content
+    assert payload["ok"] and payload["dry_run"] and payload["writes_sent"] is False
+    (item,) = payload["would_submit"]
+    assert item["operation"] == "createBooking"
+    assert item["arguments"]["employeeId"] == "employee1"
+    assert item["summary"] == {
+        "person": "Alice Jones",
+        "email": "alice@example.com",
+        "space": "A12",
+        "floor": "Ground",
+        "site": "London",
+        "start": "2026-10-01 09:00",
+        "end": "2026-10-01 17:00",
+        "time_zone": "Europe/London",
+    }
+    assert not office.writes
+
+
+async def test_validate_request_arguments_match_what_the_real_write_sends(office):
+    preview = (await validate(office, "book_spaces", BOOK_ARGS)).structured_content
+    async with Client(create_server(office.settings, office.api.transport)) as client:
+        assert not (await client.call_tool("book_spaces", BOOK_ARGS)).is_error
+    assert [(i["operation"], i["arguments"]) for i in preview["would_submit"]] == [
+        (name, args) for _, name, args in office.writes
+    ]
+
+
+async def test_validate_request_surfaces_lookup_failures_before_any_write(office):
+    office.seats.append(dict(office.seats[0], id="desk3"))
+    response = await validate(office, "book_spaces", BOOK_ARGS)
+    assert response.is_error
+    assert "Candidates" in response.structured_content["error"]
+    assert not office.writes
+
+
+async def test_validate_request_reports_bad_argument_shape_without_calling_upstream(office):
+    bad = {"bookings": [{k: v for k, v in BOOK_ARGS["bookings"][0].items() if k != "person"}]}
+    response = await validate(office, "book_spaces", bad)
+    assert response.is_error
+    assert "bookings.0.person" in response.structured_content["error"]
+    assert not office.calls
+
+
+async def test_validate_request_rejects_unknown_arguments(office):
+    response = await validate(office, "book_spaces", {**BOOK_ARGS, "dry_run": True})
+    assert response.is_error
+    assert "dry_run" in response.structured_content["error"]
+    assert not office.calls
+
+
+async def test_validate_request_catches_invalid_graphql_fields_in_workflow_values(office):
+    response = await validate(
+        office,
+        "manage_employees",
+        {
+            "action": "update",
+            "changes": [{"person": "alice@example.com", "values": {"notDefined": "bad"}}],
+        },
+    )
+    assert response.is_error
+    assert "notDefined" in response.structured_content["error"]
+    assert not office.writes
+
+
+async def test_validate_request_checks_raw_graphql_locally_without_network(office):
+    good = 'mutation { cancelBooking(id: "b1") { id } }'
+    ok = await validate(office, "graphql", {"document": good})
+    assert not ok.is_error and ok.structured_content["dry_run"]
+    bad = await validate(office, "graphql", {"document": "mutation { noSuchMutation { id } }"})
+    assert bad.is_error
+    assert not office.calls
+
+
+async def test_validate_request_respects_the_write_gate(office):
+    response = await validate(
+        office, "book_spaces", BOOK_ARGS, replace(office.settings, enable_mutations=False)
+    )
+    assert response.is_error
+    assert "disabled" in response.structured_content["error"]
+    assert not office.calls
+
+
+async def test_validate_request_rejects_tools_it_cannot_dry_run(office):
+    response = await validate(office, "find_people", {})
+    assert response.is_error
+    assert "'book_spaces'" in response.content[0].text  # the error lists what it can validate
+    assert not office.calls
+
+
+async def test_validating_does_not_turn_later_real_calls_into_dry_runs(office):
+    async with Client(create_server(office.settings, office.api.transport)) as client:
+        await client.call_tool("validate_request", {"tool": "book_spaces", "arguments": BOOK_ARGS})
+        assert not office.writes
+        response = await client.call_tool("book_spaces", BOOK_ARGS)
+    assert not response.is_error
+    assert "dry_run" not in response.structured_content
+    assert len(office.writes) == 1

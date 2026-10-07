@@ -15,7 +15,7 @@ async def test_real_stdio_protocol_and_offline_schema_discovery():
         StdioServerParameters(command=sys.executable, args=["-m", "officespace_mcp.server"])
     ) as client:
         tools = (await client.list_tools()).tools
-        assert len(tools) == 11
+        assert len(tools) == 12
         response = await client.call_tool("inspect_schema", {"search": "bookRoom"})
         assert not response.is_error
         assert response.structured_content["operations"][0]["name"] == "bookRoom"
@@ -40,6 +40,7 @@ async def test_annotations_and_input_constraints():
         tools = {t.name: t for t in (await client.list_tools()).tools}
         assert tools["find_people"].annotations.read_only_hint
         assert not tools["book_spaces"].annotations.read_only_hint
+        assert tools["validate_request"].annotations.read_only_hint
         assert (await client.call_tool("book_spaces", {"bookings": []})).is_error
 
 

@@ -32,6 +32,7 @@ class Operation:
     name: str
     arguments: dict[str, Any] = field(default_factory=dict)
     fields: str = ""
+    summary: dict[str, Any] = field(default_factory=dict)
 
 
 class API:
